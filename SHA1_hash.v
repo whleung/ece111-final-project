@@ -360,10 +360,6 @@ module SHA1_hash(
 		e_n    = 32'h00000000;
 		ae_wen = 0;
 		
-		for (i = 0; i < 80; i = i + 1) begin
-			w[i] = 32'h00000000;
-		end
-		
 		case (state)
 			READ2: begin
 				a_n    = h0;
