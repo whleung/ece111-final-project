@@ -42,13 +42,14 @@ module SHA1_hash(
 	
 	integer    i;
 	
-	reg [7:0]  buffer [0:63];
+	reg [31:0] buffer [0:15];
 	
-	reg [6:0]  buffer_size;
-	reg [6:0]  buffer_size_n;
+	reg [4:0]  buffer_size;
+	reg [4:0]  buffer_size_n;
 	reg        buffer_size_wen;
 	
-	wire [2:0] last_byte_size = (message_size % 4 == 0) ? 4 : message_size % 4;
+	wire [1:0]  last_word_size  = message_size % 4;
+	wire [31:0] big_endian_data = toBigEndian(port_A_data_out);
 	
 	reg pad_one;
 	
@@ -65,8 +66,8 @@ module SHA1_hash(
 	reg [31:0] a_n, b_n, c_n, d_n, e_n;
 	reg        ae_wen;
 	
-	reg [32:0] f;
-	reg [32:0] k;
+	reg [31:0] f;
+	reg [31:0] k;
 	
 	reg [31:0] w [0:79];
 	
@@ -82,12 +83,6 @@ module SHA1_hash(
 	
 	assign hash = {h0, h1, h2, h3, h4};
 	
-	initial begin
-		for (i = 0; i < 80; i = i + 1) begin
-			w[i] = 32'h00000000;
-		end
-	end
-	
 	always @(posedge clk or negedge nreset) begin
 		if (!nreset) begin
 			state    <= IDLE;
@@ -96,7 +91,7 @@ module SHA1_hash(
 			read_addr  <= 16'h0000;
 			bytes_read <= 32'h00000000;
 			
-			buffer_size <= 7'b0000000;
+			buffer_size <= 4'b0000;
 		
 			h0 <= 32'h00000000;
 			h1 <= 32'h00000000;
@@ -117,40 +112,49 @@ module SHA1_hash(
 					end
 				end
 				READ2: begin
-					buffer[buffer_size]     <= port_A_data_out[7:0];
-					buffer[buffer_size + 1] <= port_A_data_out[15:8];
-					buffer[buffer_size + 2] <= port_A_data_out[23:16];
-					buffer[buffer_size + 3] <= port_A_data_out[31:24];
-					
-					if (!(bytes_read + 4 < message_size)) begin
-						if (buffer_size + last_byte_size + 1 + 8 <= 64) begin
-							$display("[READ2] End of message. Buffer is big enough for padding and message length.");
-							buffer[buffer_size + last_byte_size] <= 8'h80;
-							buffer[60] <= size_in_bits[7:0];
-							buffer[61] <= size_in_bits[15:8];
-							buffer[62] <= size_in_bits[23:16];
-							buffer[63] <= size_in_bits[31:24];
-						end else if (buffer_size + last_byte_size + 1 <= 64) begin
-							$display("[READ2] End of message. Buffer is big enough for padding, but not message length. Need extra chunk.");
-							buffer[buffer_size + last_byte_size] <= 8'h80;
-							pad_one <= 0;
+					if (bytes_read + 4 < message_size) begin
+						buffer[buffer_size] <= big_endian_data;
+					end else begin
+						case (last_word_size)
+							2'b00: buffer[buffer_size] <= big_endian_data;
+							2'b01: buffer[buffer_size] <= big_endian_data | 32'h00800000;
+							2'b10: buffer[buffer_size] <= big_endian_data | 32'h00008000;
+							2'b11: buffer[buffer_size] <= big_endian_data | 32'h00000080;
+						endcase
+						
+						if (last_word_size == 2'b00) begin
+							if (buffer_size <= 12) begin
+								$display("[READ2] End of message. Buffer is big enough for padding and message length.");
+								buffer[buffer_size + 1] <= 32'h80000000;
+								buffer[15]              <= size_in_bits;
+							end else if (buffer_size <= 13) begin
+								$display("[READ2] End of message. Buffer is big enough for padding, but not message length. Need extra chunk.");
+								buffer[buffer_size + 1] <= 32'h80000000;
+								pad_one <= 0;
+							end else begin
+								$display("[READ2] End of message. Buffer is not big enough for padding and message length. Need extra chunk.");
+								pad_one <= 1;
+							end
 						end else begin
-							$display("End of message. Buffer is not big enough for padding and message length. Need extra chunk.");
-							pad_one <= 1;
+							pad_one <= 0;
+							
+							if (buffer_size <= 13) begin
+								$display("[READ2] End of message. Buffer is big enough for padding and message length.");
+								buffer[15] <= size_in_bits;
+							end else begin
+								$display("[READ2] End of message. Buffer is not big enough for padding and message length. Need extra chunk.");
+							end
 						end
 					end
 				end
 				PAD: begin
 					if (pad_one) begin
-						buffer[0] <= 8'h80;
+						buffer[0] <= 32'h80000000;
 					end else begin
-						buffer[0] <= 8'h00;
+						buffer[0] <= 32'h00000000;
 					end
 					
-					buffer[60] <= size_in_bits[31:24];
-					buffer[61] <= size_in_bits[23:16];
-					buffer[62] <= size_in_bits[15:8];
-					buffer[63] <= size_in_bits[7:0];
+					buffer[15] <= size_in_bits;
 				end
 				HASH: begin
 					if (finish_chunk) begin
@@ -220,8 +224,7 @@ module SHA1_hash(
 				state_wen = 1;
 			end
 			READ2: begin
-				$display("bytes_read: %d, message_size: %d, %d, %d", bytes_read, message_size, (bytes_read + 4 < message_size), !((bytes_read + 4 < message_size) && (buffer_size + 4 < 64)));
-				if (!((bytes_read + 4 < message_size) && (buffer_size + 4 < 64))) begin
+				if (!((bytes_read + 4 < message_size) && (buffer_size < 15))) begin
 					state_n   = HASH;
 					state_wen = 1;
 				end
@@ -234,7 +237,7 @@ module SHA1_hash(
 				if (finish_chunk) begin
 					if (bytes_read < message_size) begin
 						state_n = READ1;
-					end else if (buffer_size + last_byte_size + 1 + 8 > 64) begin
+					end else if (((last_word_size == 2'b00) && (buffer_size > 12)) || ((last_word_size != 2'b00) && (buffer_size > 13))) begin
 						state_n = PAD;
 					end else begin
 						state_n = DONE;
@@ -269,7 +272,7 @@ module SHA1_hash(
 				read_addr_wen = 1;
 			end
 			READ2: begin
-				if ((bytes_read + 4 < message_size) && (buffer_size + 4 < 64)) begin
+				if ((bytes_read + 4 < message_size) && (buffer_size < 15)) begin
 					read_addr_n   = read_addr + 4;
 					read_addr_wen = 1;
 				end
@@ -277,11 +280,11 @@ module SHA1_hash(
 		endcase
 	end
 	
-	// Buffer and DPSRAM
+	// Bytes read and buffer size
 	always @(*) begin
 		bytes_read_n    = 32'h00000000;
 		bytes_read_wen  = 0;
-		buffer_size_n   = 7'b0000000;
+		buffer_size_n   = 5'b00000;
 		buffer_size_wen = 0;
 		
 		case (state)
@@ -289,7 +292,7 @@ module SHA1_hash(
 				if (start_hash) begin
 					bytes_read_n    = 32'h00000000;
 					bytes_read_wen  = 1;
-					buffer_size_n   = 7'b0000000;
+					buffer_size_n   = 5'b0000;
 					buffer_size_wen = 1;
 				end
 			end
@@ -297,18 +300,18 @@ module SHA1_hash(
 				if (bytes_read + 4 < message_size) begin
 					bytes_read_n    = bytes_read + 4;
 					bytes_read_wen  = 1;
-					buffer_size_n   = buffer_size + 4;
+					buffer_size_n   = buffer_size + 1;
 					buffer_size_wen = 1;
 				end else begin
-					bytes_read_n    = bytes_read + last_byte_size;
+					bytes_read_n    = bytes_read + (last_word_size == 2'b00 ? 4 : last_word_size);
 					bytes_read_wen  = 1;
-					buffer_size_n   = buffer_size + last_byte_size;
+					buffer_size_n   = buffer_size + (last_word_size == 2'b00 ? 4 : last_word_size);
 					buffer_size_wen = 1;
 				end
 			end
 			HASH: begin
 				if (finish_chunk) begin
-					buffer_size_n   = 7'b0000000;
+					buffer_size_n   = 5'b00000;
 					buffer_size_wen = 1;
 				end
 			end
@@ -357,6 +360,10 @@ module SHA1_hash(
 		e_n    = 32'h00000000;
 		ae_wen = 0;
 		
+		for (i = 0; i < 80; i = i + 1) begin
+			w[i] = 32'h00000000;
+		end
+		
 		case (state)
 			READ2: begin
 				a_n    = h0;
@@ -368,7 +375,7 @@ module SHA1_hash(
 			end
 			HASH: begin
 				if (t < 16) begin
-					w[t] = {buffer[t * 4], buffer[t * 4 + 1], buffer[t * 4 + 2], buffer[t * 4 + 3]};
+					w[t] = buffer[t];
 				end else begin
 					w[t] = rotl(w[t-3] ^ w[t-8] ^ w[t-14] ^ w[t-16], 1);
 				end
@@ -395,12 +402,6 @@ module SHA1_hash(
 				ae_wen = 1;
 			end
 			PAD: begin
-				if (pad_one) begin
-					w[0] <= 32'h80000000;
-				end else begin
-					w[0] <= 32'h00000000;
-				end
-				
 				a_n    = h0;
 				b_n    = h1;
 				c_n    = h2;
@@ -443,13 +444,11 @@ module SHA1_hash(
 				$display("[READ1] Getting value at 0x%x", read_addr);
 			end
 			READ2: begin
-				$display("[READ2] Value at 0x%x: %x %x %x %x",
+				$display("[READ2] Value at 0x%x: %x",
 				         read_addr - 4,
-							port_A_data_out[7:0],
-							port_A_data_out[15:8],
-							port_A_data_out[23:16],
-							port_A_data_out[31:24]);
-				if ((bytes_read + 4 < message_size) && (buffer_size + 4 < 64)) begin
+							toBigEndian(port_A_data_out));
+				$display("[HASH] bytes_read: %d", bytes_read);
+				if ((bytes_read + 4 < message_size) && (buffer_size < 15)) begin
 					$display("[READ2] Getting value at 0x%x", read_addr);
 				end
 				displayBuffer();
@@ -459,7 +458,12 @@ module SHA1_hash(
 			end
 		endcase
 	end
-		
+	
+	function [31:0] toBigEndian;
+		input [31:0] value;
+		toBigEndian = {value[7:0], value[15:8], value[23:16], value[31:24]};
+	endfunction
+	
 	function [31:0] rotl;
 		input [31:0] value;
 		input [7:0] shift;
@@ -468,7 +472,7 @@ module SHA1_hash(
 
 	task clearBuffer;
 		begin
-			for (i = 0; i < 64; i = i + 1) begin
+			for (i = 0; i < 16; i = i + 1) begin
 				buffer[i] <= 8'h00;
 			end
 		end
@@ -478,11 +482,11 @@ module SHA1_hash(
 		begin
 			$display("buffer size: %d", buffer_size);
 			for (i = 0; i < 4; i = i + 1) begin
-				$display("buffer: %x %x %x %x  %x %x %x %x  %x %x %x %x  %x %x %x %x",
-							buffer[i * 16 + 0],  buffer[i * 16 + 1],  buffer[i * 16 + 2],  buffer[i * 16 + 3],
-							buffer[i * 16 + 4],  buffer[i * 16 + 5],  buffer[i * 16 + 6],  buffer[i * 16 + 7],
-							buffer[i * 16 + 8],  buffer[i * 16 + 9],  buffer[i * 16 + 10], buffer[i * 16 + 11],
-							buffer[i * 16 + 12], buffer[i * 16 + 13], buffer[i * 16 + 14], buffer[i * 16 + 15]);
+				$display("buffer: %x %x %x %x",
+							buffer[i * 4 + 0],
+							buffer[i * 4 + 1],
+							buffer[i * 4 + 2],
+							buffer[i * 4 + 3]);
 			end
 		end
 	endtask
