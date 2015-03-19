@@ -69,7 +69,7 @@ module SHA1_hash(
 	reg [31:0] f;
 	reg [31:0] k;
 	
-	reg [31:0] w [0:79];
+	reg [31:0] w [0:15];
 	
 	reg [6:0]  t;
 	reg [6:0]  t_n;
@@ -77,7 +77,7 @@ module SHA1_hash(
 	
 	wire [31:0] a5  = {a[26:0], a[31:27]};
 	wire [31:0] b30 = {b[1:0], b[31:2]};
-	wire [31:0] T   = a5 + f + w[t] + k + e;
+	wire [31:0] T   = a5 + f + w[15] + k + e;
 	wire [31:0] size_in_bits = message_size << 3;
 	wire        finish_chunk = (t == 79);
 	
@@ -104,6 +104,10 @@ module SHA1_hash(
 			c  <= 32'h00000000;
 			d  <= 32'h00000000;
 			e  <= 32'h00000000;
+			
+			for (i = 0; i < 16; i = i + 1) begin
+				w[i] = 32'h00000000;
+			end
 		end else begin
 			case (state)
 				IDLE: begin
@@ -112,6 +116,8 @@ module SHA1_hash(
 					end
 				end
 				READ2: begin
+					w[15] <= buffer[0];
+					
 					if (bytes_read + 4 < message_size) begin
 						buffer[buffer_size] <= big_endian_data;
 					end else begin
@@ -150,13 +156,25 @@ module SHA1_hash(
 				PAD: begin
 					if (pad_one) begin
 						buffer[0] <= 32'h80000000;
+					   w[15]     <= 32'h80000000;
 					end else begin
 						buffer[0] <= 32'h00000000;
+					   w[15]     <= 32'h00000000;
 					end
 					
 					buffer[15] <= size_in_bits;
 				end
 				HASH: begin
+					if (t < 15) begin
+						w[15] <= buffer[t + 1];
+					end else begin
+						w[15] <= rotl(w[13] ^ w[8] ^ w[2] ^ w[0], 1);
+					end
+					
+					for (i = 0; i < 15; i = i + 1) begin
+						w[i] <= w[i + 1];
+					end
+					
 					if (finish_chunk) begin
 						clearBuffer();
 					end
@@ -370,12 +388,6 @@ module SHA1_hash(
 				ae_wen = 1;
 			end
 			HASH: begin
-				if (t < 16) begin
-					w[t] = buffer[t];
-				end else begin
-					w[t] = rotl(w[t-3] ^ w[t-8] ^ w[t-14] ^ w[t-16], 1);
-				end
-				
 				if (t < 20) begin
 					f = (b & c) | ((~b) & d);
 					k = 32'h5A827999;
@@ -450,7 +462,7 @@ module SHA1_hash(
 				displayBuffer();
 			end
 			HASH: begin
-				$display("[HASH] t: %d, w[t]: %x, A: %x,  B: %x,  C: %x,  D: %x,  E: %x, F:%x, K: %x", t, w[t], a, b, c, d, e, f, k);
+				$display("[HASH] t: %d, w[t]: %x, A: %x,  B: %x,  C: %x,  D: %x,  E: %x, F:%x, K: %x", t, w[15], a, b, c, d, e, f, k);
 			end
 		endcase
 	end
