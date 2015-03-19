@@ -123,9 +123,9 @@ module SHA1_hash(
 					end else begin
 						case (last_word_size)
 							2'b00: buffer[buffer_size] <= big_endian_data;
-							2'b01: buffer[buffer_size] <= big_endian_data | 32'h00800000;
-							2'b10: buffer[buffer_size] <= big_endian_data | 32'h00008000;
-							2'b11: buffer[buffer_size] <= big_endian_data | 32'h00000080;
+							2'b01: buffer[buffer_size] <= (big_endian_data & 32'hFF000000) | 32'h00800000;
+							2'b10: buffer[buffer_size] <= (big_endian_data & 32'hFFFF0000) | 32'h00008000;
+							2'b11: buffer[buffer_size] <= (big_endian_data & 32'hFFFFFF00) | 32'h00000080;
 						endcase
 						
 						if (last_word_size == 2'b00) begin
